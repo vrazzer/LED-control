@@ -72,7 +72,7 @@
 #define GATT_HAND_VAL_IND     0x1D // IND??
 #define GATT_HAND_VAL_CONF    0x1E // CONF (CONFIG?)
 
-#define CONN_TIMEOUT 15
+#define CONN_TIMEOUT 10
 
 // table of device fingerprints from 2902 query
 const static struct {
@@ -118,7 +118,8 @@ static struct sp630e {
     uint8_t len;     // pixel length (1..?)
     uint8_t rgb[3];  // color rgb
   } cust[7];         // 0x30: list of seven custom colors
-  uint8_t u76[8];    // 0x4c:
+  uint8_t u76[3];    // 0x4c: (79 parms bytes total)
+  uint8_t query;     // 0x4f: final byte hold query state (0=no-query, 1=in-progress, 2=complete)
 } _sp = { 0 }, _pr = { 0 };
 
 // simple command table
@@ -133,7 +134,7 @@ struct command {
 };
 
 static const struct command cmdlist[] = {
-  "?",       "",   1, 1, 0x02, "<0=short|1=long>", "parameter query",
+  "query",   "",   1, 1, 0x02, "<0=short|1=long>", "parameter query",
   "onoff", "a1",   4, 4, 0x08, "<1..4=effect> <1..3=speed> <pixels-high> <pixels-low>", "effect used during power-on/off",
   "coexist", "",   1, 1, 0x0a, "<0=separate|1=combined>", "some kind of color+white blending?",
   "reboot",  "",   1, 1, 0x0b, "<0=off|1=on|2=resume>", "action when power applied (seems unworking)",
@@ -152,13 +153,17 @@ static const struct command cmdlist[] = {
   "play",    "",   1, 1, 0x5d, "<0=pause|1=play>", "pause/play effects for dynamic/sound mode",
   "bulk",    "",   1,12, 0x5e, "<1..7=mode> <1..4=effect> <1..255=level> <1..10=speed> <1..99=length> <0=left|1=right> <0..255=var44> <0.255=var45> <0..255=r> <0..255=g> <0..255=b> <0..255=var34> <0..255=var35>", "bulk set parms",
   "static", "a1a1a255a1a1a0a0a0", 3, 3, 0x5e, "<0..255=r> <0..255=g> <0..255=b>", "atomic change to static",
-  "dynamic", "a3", 5, 5, 0x5e, "<1..130=effect> <1..255=level> <1..10=speed> <1..99=length> <0=left|1=right>", "atomic change to dynamic",
+  "dynamic","a3", 5, 5, 0x5e, "<1..130=effect> <1..255=level> <1..10=speed> <1..99=length> <0=left|1=right>", "atomic change to dynamic",
+  "music", "a5",  5, 5, 0x5e, "<1..130=effect> <1..255=level> <1..10=speed> <1..99=length> <0=left|1=right>", "atomic change to dynamic",
   "var34",   "",   1, 2, 0x61, "<0..255=var34> <0..255=var35>", "changes var34/var35 but actual purpose unknown",
   "mode2",   "",   1, 1, 0x62, "<0=pause|1..7=mode>", "change mode without changing effect (same as single-parm mode command?)",
-  "cust",  "a1",   4,28, 0x63, "<1..20=len> <r> <g> <b> [up to 6 additional]", "set custom pattern (mode 7 to animate)",
+  "custom","a1",   4,28, 0x63, "<1..20=len> <r> <g> <b> [up to 6 additional]", "set custom pattern (mode 7 to animate)",
   "type",  "a1",   1, 1, 0x6a, "<1=pwm-mono|2=spi-mono|3=pwm-cct|4=spi-cct|5=pwm-rgb|6=spi-rgb|7=pwm-rgbw|8=spi-rgbw|9=pwm1+spi>", "set led string type",
   "order",   "",   1, 1, 0x6b, "<0=brg|1=bgr|2=rbg|3=gbr|4=rgb|5=grb>", "set led order (works during animation)",
   "ref",     "",   3, 3, 0x6c, "<0..255=led1> <0..255=led2> <0..255=led3>", "show static color without order correction (likely for setup)",
+  "set",   "a0",   1, 1, 0x51, "<0..255=level>", "set the level (all modes)",
+  "inc",  "a0m",   1, 1, 0x51, "<0..255=level>", "increase level unless already higher (must query first)",
+  "dec",  "a0m",   1, 1, 0x51, "<0..255=level>", "decrease level unless already lower (must query first)",
   "", "", 0, 0, 0
 };
 
@@ -200,16 +205,9 @@ const struct {
 // send commands to controller (cmdline format: cmd <arg1> <arg2> ... <argn>)
 void cmdline(char *line, int sock)
 {
-  // enable notify prior to first query
-  if (line[0] == '?') {
-    if (_sp.fw[0] == 0) {
-      uint8_t req[] = { GATT_WRITE_REQ, 0x0f, 0x00, 0x01, 0x00 };
-      int rc = send(sock, req, sizeof(req), 0);
-      usleep(100*1000);
-    }
-    if (line[1] == '\n')
-      strcpy(line, "? 0");
-  }
+  // shortcut
+  if (line[0] == '?')
+    strcpy(line, "query 29");
 
   // parse input into whitespace separated values
   int ac = 0;
@@ -236,45 +234,61 @@ void cmdline(char *line, int sock)
       break;
     }
   }
+  if (cmd == NULL)
+    return;
 
-  // send the command
-  if (cmd != NULL) {
-    uint8_t req[48] = { GATT_WRITE_REQ, 0x0e, 0x00, 0x53, cmd->code, 0x00, 0x01, 0x00, 0 };
-    uint8_t *add = req+8;
-    // allow add-in byte(s)
-    for (char *next = (char *)cmd->adj; *next++ == 'a';)
-      add[++(*add)] = strtol(next, &next, 0);
-    for (int i = 1; i < ac; ++i)
-      add[++(*add)] = strtol(av[i], NULL, 0);
-    // allow padding
-    while ((cmd->adj[0] == 'p') && (*add < cmd->max))
-      add[++(*add)] = atoi(cmd->adj+1);
+  // enable notify prior to first query
+  if ((strcmp(av[0], "query") == 0) && (_sp.fw[0] == 0)) {
+    uint8_t req[] = { GATT_WRITE_REQ, 0x0f, 0x00, 0x01, 0x00 };
+    int rc = send(sock, req, sizeof(req), 0);
+    usleep(100*1000);
+  }
 
-    int len = (add-req)+1+add[0];
-    int rc = send(sock, req, len, 0);
-    printf("send(%d): ", len);
-    for (int i = 0; i < len; ++i)
-      printf("%02x ", req[i]);
-    printf("(rc=%d)\n", rc);
+  uint8_t req[48] = { GATT_WRITE_REQ, 0x0e, 0x00, 0x53, cmd->code, 0x00, 0x01, 0x00, 0 };
+  uint8_t *add = req+8;
+  // allow add-in byte(s)
+  for (char *next = (char *)cmd->adj; *next++ == 'a';)
+    add[++(*add)] = strtol(next, &next, 0);
+  for (int i = 1; i < ac; ++i)
+    add[++(*add)] = strtol(av[i], NULL, 0);
+  // allow padding
+  while ((cmd->adj[0] == 'p') && (*add < cmd->max))
+    add[++(*add)] = atoi(cmd->adj+1);
+
+  // check existing level prior to inc/dec
+  if ((strcmp(av[0], "inc") == 0) && (_sp.fw[0] != 0) && (_sp.level > add[2]))
+    return;
+  if ((strcmp(av[0], "dec") == 0) && (_sp.fw[0] != 0) && (_sp.level < add[2]))
+    return;
+
+  int len = (add-req)+1+add[0];
+  int rc = send(sock, req, len, 0);
+  fprintf(stderr, "send(%d): ", len);
+  for (int i = 0; i < len; ++i)
+    fprintf(stderr, "%02x ", req[i]);
+  fprintf(stderr, "(rc=%d)\n", rc);
+  if ((rc > 0) && (strcmp(av[0], "query") == 0)) {
+    _sp.query = 1;
   }
 }
 
 // process incoming packet
-void receive(const char *rcvbuf, int rcvlen)
+void receive(const uint8_t *rcvbuf, int rcvlen)
 {
-  // parse device config (short or long format)
+  // parse device config (first segment determines width)
   if ((rcvlen > 8) && (rcvbuf[0] == GATT_HAND_VAL_NOTIFY) && (rcvbuf[3] == 0x53) && (rcvbuf[4] == 0x02)) {
+    static int wid = 0;
     int seg = rcvbuf[7];
     int len = rcvbuf[8];
-    if ((seg == 0) && (len > 48) && (len <= sizeof(_sp))) {
-      memcpy(&_sp, rcvbuf+9, len);
-    } else if ((len == 14) && ((seg+1)*14 <= sizeof(_sp))) {
-      memcpy(&_sp.u0[seg*14], rcvbuf+9, 14);
-      if (seg < 6) len = 0;
-    }
+    if (seg == 0)
+      wid = len;
+    if (seg*wid+len <= sizeof(_sp))
+      memcpy(&_sp.u0+seg*wid, rcvbuf+9, len);
+    if (len < wid)
+      _sp.query = 2;
 
     // show parms after long-query or final short-query segment
-    if (len) {
+    if (_sp.query > 1) {
       char out[4096];
       if (_pr.fw[0] == 0)
         memcpy(&_pr, &_sp, sizeof(_pr));
@@ -298,7 +312,7 @@ void receive(const char *rcvbuf, int rcvlen)
           len += snprintf(out+len, sizeof(out)-len, "0x%02x:%02x->%02x ", i, _pr.u0[i], _sp.u0[i]);
         }
       if (len > 0)
-        printf("diff: %s\n", out);
+        fprintf(stderr, "diff: %s\n", out);
 
       len = 0;
       char pr[16], sp[16];
@@ -330,7 +344,7 @@ void receive(const char *rcvbuf, int rcvlen)
 int main(int argc, char *argv[])
 {
   if (argc < 2) {
-    fprintf(stderr, "usage: %s bt-addr [--cmd=\"parm(s)\"] [--cmd=\"parm(s)\"] ... [-I(nteractive)]\n", argv[0]);
+    fprintf(stderr, "usage: %s bt-addr [timeout] [--cmd=\"parm(s)\"] [--cmd=\"parm(s)\"] ... [-I(nteractive)]\n", argv[0]);
     for (int i = 0; cmdlist[i].cmd[0] != 0; ++i) {
       char cmd[256];
       snprintf(cmd, sizeof(cmd), "  --%s=\"%s\"", cmdlist[i].cmd, cmdlist[i].parm);
@@ -340,15 +354,17 @@ int main(int argc, char *argv[])
     exit(0);
   }
 
+  int argi = 2;
+  time_t lasttime = (argc >= 3) && (argv[2][0] >= '1') && (argv[2][0] <= '9') ? time(NULL)+atoi(argv[argi++]) : time(NULL)+60;
   const char *kind = NULL;
-  for (int sock = -1, argi = 2, tty = 0;;) {
+  for (int sock = -1, tty = 0; time(NULL) <= lasttime;) {
     // handle socket init/connect
     if (sock < 0) {
       kind = NULL;
       memset(&_sp, 0, sizeof(_sp));
       sock = socket(PF_BLUETOOTH, SOCK_SEQPACKET, BTPROTO_L2CAP);
       if (sock < 0) {
-        printf("socket error: %s (%d)\n", strerror(errno), errno);
+        fprintf(stderr, "socket error: %s (%d)\n", strerror(errno), errno);
         usleep(1000*1000);
         continue;
       }
@@ -360,14 +376,14 @@ int main(int argc, char *argv[])
       addr.l2_bdaddr_type = BDADDR_LE_PUBLIC;
       addr.l2_cid = htobs(4);
       if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0)
-        printf("bind error: %s (%d)\n", strerror(errno), errno);
+        fprintf(stderr, "bind error: %s (%d)\n", strerror(errno), errno);
 
       // connect at low security
       struct bt_security sec;
       memset(&sec, 0, sizeof(sec));
       sec.level = BT_SECURITY_LOW;
       if (setsockopt(sock, SOL_BLUETOOTH, BT_SECURITY, &sec, sizeof(sec)) < 0)
-        printf("setsockopt error: %s (%d)\n", strerror(errno), errno);
+        fprintf(stderr, "setsockopt error: %s (%d)\n", strerror(errno), errno);
 
       // setup destination bluetooth address
       memset(&addr, 0, sizeof(addr));
@@ -377,31 +393,37 @@ int main(int argc, char *argv[])
       str2ba(argv[1], &addr.l2_bdaddr);
 
       // non-blocking connect+poll to control timeout
-      printf("connect %s\n", argv[1]);
       int block = fcntl(sock, F_GETFL, 0);
       fcntl(sock, F_SETFL, block|O_NONBLOCK);
       connect(sock, (struct sockaddr *)&addr, sizeof(addr));
       struct pollfd pfd = { .fd = sock, .events = POLLOUT, .revents = 0 };
-      poll(&pfd, 1, CONN_TIMEOUT*1000);
+      time_t conntime = lasttime-time(NULL);
+      if (conntime > CONN_TIMEOUT)
+        conntime = CONN_TIMEOUT;
+      fprintf(stderr, "connect %s (timeout=%d)\n", argv[1], conntime);
+      poll(&pfd, 1, conntime*1000);
       fcntl(sock, F_SETFL, block);
-
-      // read 0x2902 as identifier and to verify connection
-      uint8_t req[] = { GATT_READ_BY_TYPE_REQ, 0x01, 0x00, 0xff, 0xff, 0x02, 0x29 };
-      if (send(sock, req, sizeof(req), 0) < 0) {
-        printf("connect error: %s (%d)\n", strerror(errno), errno);
-        close(sock);
-        sock = -1;
-        // avoid hammering cpu if error is non-recoverable
-        usleep(1000*1000);
-        continue;
-      }
     }
 
     // wait for packet (or console input during interactive mode)
     struct pollfd pfd[2] = { {.fd=sock, .events=POLLIN, .revents=0 }, {.fd=0, .events=POLLIN, .revents=0} };
     if (poll(pfd, 1+tty, 250) < 0) {
-       printf("poll error: %s (%d)\n", strerror(errno), errno);
+       fprintf(stderr, "poll error: %s (%d)\n", strerror(errno), errno);
        continue;
+    }
+
+    // if poll timed out and unidentified device, query it
+    // (can happen multiple times as sp630e goes unresponsive periodically)
+    if (!pfd[0].revents && !tty && (kind == NULL)) {
+      fprintf(stderr, "identify 0x2902\n");
+      usleep(100*1000);
+      uint8_t req[] = { GATT_READ_BY_TYPE_REQ, 0x01, 0x00, 0xff, 0xff, 0x02, 0x29 };
+      if (send(sock, req, sizeof(req), 0) < 0) {
+        fprintf(stderr, "identify error: %s (%d)\n", strerror(errno), errno);
+        close(sock);
+        sock = -1;
+        continue;
+      }
     }
 
     // process any incoming packet
@@ -409,7 +431,7 @@ int main(int argc, char *argv[])
       uint8_t rcvbuf[1024];
       int rcvlen = read(sock, rcvbuf, sizeof(rcvbuf));
       if (rcvlen < 0) {
-        printf("read error: %s (%d)\n", strerror(errno), errno);
+        fprintf(stderr, "read error: %s (%d)\n", strerror(errno), errno);
         close(sock);
         sock = -1;
         continue;
@@ -417,10 +439,10 @@ int main(int argc, char *argv[])
 
       // show meaningful packets (skip single byte response acknowledgements)
       if ((rcvlen != 1) || (rcvbuf[0] != GATT_WRITE_RSP)) {
-        printf("recv(%d):", rcvlen);
+        fprintf(stderr, "recv(%d):", rcvlen);
         for (int i = 0; i < rcvlen; ++i)
-          printf(" %02x", rcvbuf[i]);
-        printf("\n");
+          fprintf(stderr, " %02x", rcvbuf[i]);
+        fprintf(stderr, "\n");
       }
 
       // handle identify response
@@ -429,7 +451,7 @@ int main(int argc, char *argv[])
           const uint8_t *resp = _ident[i].resp;
           if ((rcvlen == resp[0]+4) && (memcmp(rcvbuf+4, resp+1, resp[0]) == 0)) {
             kind = _ident[i].kind;
-            printf("found %s\n", kind);
+            fprintf(stderr, "found %s\n", kind);
             break;
           }
         }
@@ -448,7 +470,7 @@ int main(int argc, char *argv[])
     }
 
     // process command-line parms
-    if ((kind != NULL) && (argi < argc)) {
+    if ((kind != NULL) && (_sp.query != 1) && (argi < argc)) {
       char line[4096];
       snprintf(line, sizeof(line), "%s", argv[argi++]);
       if ((line[0] == '-') && (line[1] == '-')) {
@@ -461,9 +483,11 @@ int main(int argc, char *argv[])
     if (!tty & (argi == argc)) {
       if ((argc > 2) && (strcmp(argv[argi-1], "-I") != 0))
         break;
-      printf("interactive mode\n");
+      fprintf(stderr, "interactive mode (timeout disabled)\n");
+      lasttime += 86400;
       tty = 1;
     }
   }
+  exit(argi < argc ? EXIT_FAILURE : EXIT_SUCCESS);
 }
 
