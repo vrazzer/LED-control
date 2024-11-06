@@ -114,13 +114,18 @@ static struct sp630e {
   uint8_t var44;     // 0x2c: set by 0x5e
   uint8_t var45;     // 0x2d: set by 0x5e
   uint8_t u46[2];    // 0x2e:
-  struct {           // custom (mode 7) length/color data
+  struct {           // custom (mode 7) length+rgb data
     uint8_t len;     // pixel length (1..?)
     uint8_t rgb[3];  // color rgb
   } cust[7];         // 0x30: list of seven custom colors
-  uint8_t u76[3];    // 0x4c: (79 parms bytes total)
-  uint8_t query;     // 0x4f: final byte hold query state (0=no-query, 1=in-progress, 2=complete)
+  uint8_t u76[3];    // 0x4c:
+  uint8_t u79[1];    // 0x4f: final byte (only returned after 0x5c call)
 } _sp = { 0 }, _pr = { 0 };
+
+static struct {
+  int off;           // current offset into parm query (0=not in progress)
+  int cnt;           // count of queries (0=no query yet)
+} _qs = { 0 };
 
 // simple command table
 struct command {
@@ -212,7 +217,7 @@ void cmdline(char *line, int sock)
   // parse input into whitespace separated values
   int ac = 0;
   char *av[32] = { NULL }, *tok = NULL;
-  for (av[ac++] = strtok_r(line, "\n\"= ", &tok); av[ac] = strtok_r(NULL, "\n ", &tok); ++ac)
+  for (av[ac++] = strtok_r(line, "\n\"\'= ", &tok); av[ac] = strtok_r(NULL, "\n\"\': ", &tok); ++ac)
     if (ac+1 >= sizeof(av)/sizeof(av[0])) break;
   av[ac] = NULL;
 
@@ -267,8 +272,8 @@ void cmdline(char *line, int sock)
   for (int i = 0; i < len; ++i)
     fprintf(stderr, "%02x ", req[i]);
   fprintf(stderr, "(rc=%d)\n", rc);
-  if ((rc > 0) && (strcmp(av[0], "query") == 0)) {
-    _sp.query = 1;
+  if ((rc > 0) && (req[4] == 0x02)) {
+    _qs.off = -1;
   }
 }
 
@@ -281,63 +286,62 @@ void receive(const uint8_t *rcvbuf, int rcvlen)
     int seg = rcvbuf[7];
     int len = rcvbuf[8];
     if (seg == 0)
-      wid = len;
-    if (seg*wid+len <= sizeof(_sp))
-      memcpy(&_sp.u0+seg*wid, rcvbuf+9, len);
-    if (len < wid)
-      _sp.query = 2;
+      _qs.off = 0;
+    if (_qs.off+len <= sizeof(_sp))
+      memcpy(&_sp.u0+_qs.off, rcvbuf+9, len);
+    if ((_qs.off += len) < 76)
+      return;
+    _qs.off = 0;
 
-    // show parms after long-query or final short-query segment
-    if (_sp.query > 1) {
-      char out[4096];
-      if (_pr.fw[0] == 0)
-        memcpy(&_pr, &_sp, sizeof(_pr));
-
-      const char *key[256] = { NULL } ;
-      for (int i = 0; format[i].fmt != NULL; ++i) {
-        uint8_t *pr8 = format[i].pr;
-        uint8_t *sp8 = format[i].sp;
-        if ((pr8 == NULL) || (sp8 == NULL))
-          continue;
-        for (int j = 0; j < format[i].len; ++j) {
-          key[sp8-_sp.u0+j] = format[i].key;
-        }
-      }
-
-      len = 0;
-      for (int i = 0; i < sizeof(_sp); ++i)
-        if (_pr.u0[i] != _sp.u0[i]) {
-          if (key[i] != NULL)
-            len += snprintf(out+len, sizeof(out)-len, "(%s)", key[i]);
-          len += snprintf(out+len, sizeof(out)-len, "0x%02x:%02x->%02x ", i, _pr.u0[i], _sp.u0[i]);
-        }
-      if (len > 0)
-        fprintf(stderr, "diff: %s\n", out);
-
-      len = 0;
-      char pr[16], sp[16];
-      for (int i = 0; format[i].fmt != NULL; ++i) {
-        uint8_t *pr8 = format[i].pr;
-        uint8_t *sp8 = format[i].sp;
-        if ((pr8 == NULL) || (sp8 == NULL)) {
-          len += snprintf(out+len, sizeof(out)-len, "%s", format[i].fmt);
-          continue;
-        } else if (strchr(format[i].fmt, 's') != NULL) {
-          snprintf(pr, sizeof(pr), format[i].fmt, format[i].pr);
-          snprintf(sp, sizeof(sp), format[i].fmt, format[i].sp);
-        } else {
-          snprintf(pr, sizeof(pr), format[i].fmt, pr8[0], pr8[1], pr8[2], pr8[3]);
-          snprintf(sp, sizeof(sp), format[i].fmt, sp8[0], sp8[1], sp8[2], sp8[3]);
-        }
-        if (strcmp(pr, sp) != 0)
-          len += snprintf(out+len, sizeof(out)-len, "%s=%s->%s ", format[i].key, pr, sp);
-        else
-          len += snprintf(out+len, sizeof(out)-len, "%s=%s ", format[i].key, sp);
-      }
-      if (len > 0)
-        printf("%s\n", out);
+    // show parms/changes after final query segment
+    char out[4096];
+    if (!_qs.cnt++)
       memcpy(&_pr, &_sp, sizeof(_pr));
+
+    const char *key[256] = { NULL } ;
+    for (int i = 0; format[i].fmt != NULL; ++i) {
+      uint8_t *pr8 = format[i].pr;
+      uint8_t *sp8 = format[i].sp;
+      if ((pr8 == NULL) || (sp8 == NULL))
+        continue;
+      for (int j = 0; j < format[i].len; ++j) {
+        key[sp8-_sp.u0+j] = format[i].key;
+      }
     }
+
+    len = 0;
+    for (int i = 0; i < sizeof(_sp); ++i)
+      if (_pr.u0[i] != _sp.u0[i]) {
+        if (key[i] != NULL)
+          len += snprintf(out+len, sizeof(out)-len, "(%s)", key[i]);
+        len += snprintf(out+len, sizeof(out)-len, "0x%02x:%02x->%02x ", i, _pr.u0[i], _sp.u0[i]);
+      }
+    if (len > 0)
+      fprintf(stderr, "diff: %s\n", out);
+
+    len = 0;
+    char pr[16], sp[16];
+    for (int i = 0; format[i].fmt != NULL; ++i) {
+      uint8_t *pr8 = format[i].pr;
+      uint8_t *sp8 = format[i].sp;
+      if ((pr8 == NULL) || (sp8 == NULL)) {
+        len += snprintf(out+len, sizeof(out)-len, "%s", format[i].fmt);
+        continue;
+      } else if (strchr(format[i].fmt, 's') != NULL) {
+        snprintf(pr, sizeof(pr), format[i].fmt, format[i].pr);
+        snprintf(sp, sizeof(sp), format[i].fmt, format[i].sp);
+      } else {
+        snprintf(pr, sizeof(pr), format[i].fmt, pr8[0], pr8[1], pr8[2], pr8[3]);
+        snprintf(sp, sizeof(sp), format[i].fmt, sp8[0], sp8[1], sp8[2], sp8[3]);
+      }
+      if (strcmp(pr, sp) != 0)
+        len += snprintf(out+len, sizeof(out)-len, "%s=%s->%s ", format[i].key, pr, sp);
+      else
+        len += snprintf(out+len, sizeof(out)-len, "%s=%s ", format[i].key, sp);
+    }
+    if (len > 0)
+      printf("%s\n", out);
+    memcpy(&_pr, &_sp, sizeof(_pr));
   }
 }
 
@@ -362,6 +366,7 @@ int main(int argc, char *argv[])
     if (sock < 0) {
       kind = NULL;
       memset(&_sp, 0, sizeof(_sp));
+      memset(&_qs, 0, sizeof(_qs));
       sock = socket(PF_BLUETOOTH, SOCK_SEQPACKET, BTPROTO_L2CAP);
       if (sock < 0) {
         fprintf(stderr, "socket error: %s (%d)\n", strerror(errno), errno);
@@ -402,6 +407,8 @@ int main(int argc, char *argv[])
         conntime = CONN_TIMEOUT;
       fprintf(stderr, "connect %s (timeout=%d)\n", argv[1], conntime);
       poll(&pfd, 1, conntime*1000);
+      if (pfd.revents != POLLOUT)
+        fprintf(stderr, "connect error: revents=%02x\n", pfd.revents);
       fcntl(sock, F_SETFL, block);
     }
 
@@ -438,10 +445,12 @@ int main(int argc, char *argv[])
       }
 
       // show meaningful packets (skip single byte response acknowledgements)
-      if ((rcvlen != 1) || (rcvbuf[0] != GATT_WRITE_RSP)) {
+      if ((rcvlen > 1) || (rcvbuf[0] != GATT_WRITE_RSP)) {
         fprintf(stderr, "recv(%d):", rcvlen);
         for (int i = 0; i < rcvlen; ++i)
           fprintf(stderr, " %02x", rcvbuf[i]);
+        if ((rcvbuf[rcvlen-1] > ' ') && (rcvbuf[rcvlen-1] < 127))
+          fprintf(stderr, " (%c)", rcvbuf[rcvlen-1]);
         fprintf(stderr, "\n");
       }
 
@@ -470,7 +479,7 @@ int main(int argc, char *argv[])
     }
 
     // process command-line parms
-    if ((kind != NULL) && (_sp.query != 1) && (argi < argc)) {
+    if ((kind != NULL) && (_qs.off == 0) && (argi < argc)) {
       char line[4096];
       snprintf(line, sizeof(line), "%s", argv[argi++]);
       if ((line[0] == '-') && (line[1] == '-')) {
