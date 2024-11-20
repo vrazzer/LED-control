@@ -83,22 +83,27 @@ const static struct {
     "SP630E-1", { 10, 0x00, 0x00, 0x0f, 0x00, 0x01, 0x00, 0x15, 0x00, 0x00, 0x00 },
 };
 
+// query returns 77+rcnt*2 bytes (97 on factory fresh unit)
 static struct sp630e {
   uint8_t u0[1];     // 0x00: convenience uint8 pointer
-  uint8_t u1[4];     // 0x01:
+  uint8_t u1[4];     // 0x01: 0x01
   uint8_t fw[8];     // 0x05: firmware version (V3.0.08 on my unit)
-  uint8_t u13[1];    // 0x0d:
-
-  uint8_t u14[4];    // 0x0e:
+  uint8_t u13[1];    // 0x0d: 0x80=factory 0x86=tester
+  uint8_t u14[1];    // 0x0e: 0x01=factory 0x03=tester
+  uint8_t u15[1];    // 0x0f: 0x03
+  uint8_t u16[1];    // 0x10: 0x00
+  uint8_t u17[1];    // 0x11: 0x3c=factory 0x14=tester
   uint8_t coexist;   // 0x12: allow rgb+white (why?)
   uint8_t reboot;    // 0x13: power state on reboot (0=off, 1=on, 2=resume)
-  uint8_t u20[3];    // 0x14:
+
+  uint8_t u20[1];    // 0x14: 0x02
+  uint8_t u21[1];    // 0x15: 0x4b=factory 0x3b=tester
+  uint8_t u22[1];    // 0x16: 0x00
   uint8_t power;     // 0x17: current power (0=off, 1=on)
   uint8_t loop;      // 0x18: loop through effects (0=off, 1=on)
-  uint8_t u25[1];    // 0x19:
+  uint8_t u25[1];    // 0x19: 0x00=factory 0x04=tester
   uint8_t mode;      // 0x1a: display mode (1/2=static, 3/4=dynamic, 5/6=sound, 7=custom)
   uint8_t effect;    // 0x1b: effect within mode (over 130 effects for mode 3)
-
   uint8_t u28[1];    // 0x1c:
   uint8_t level;     // 0x1d: rgb color level
   uint8_t white;     // 0x1e: white-led intensity
@@ -109,6 +114,7 @@ static struct sp630e {
   uint8_t len;       // 0x25: effect length (1..150)
   uint8_t dir;       // 0x26: effect direction (0/1)
   uint8_t gain;      // 0x27: microphone gain (0=disable, 1..255=gain)
+
   uint8_t mic;       // 0x28: sound trigger (0=internal microphone, 1=pulse request)
   uint8_t rgb2[3];   // 0x29: rgb changed by 0x57 for unknown purpose
   uint8_t var44;     // 0x2c: set by 0x5e
@@ -118,8 +124,8 @@ static struct sp630e {
     uint8_t len;     // pixel length (1..?)
     uint8_t rgb[3];  // color rgb
   } cust[7];         // 0x30: list of seven custom colors
-  uint8_t u76[3];    // 0x4c:
-  uint8_t u79[1];    // 0x4f: final byte (only returned after 0x5c call)
+  uint8_t rcnt;      // 0x4c: number of remote control mode+effects (factory=10)
+  uint8_t rme[20];   // 0x4d: remote-control mode+effect pairs (10 pairs max)
 } _sp = { 0 }, _pr = { 0 };
 
 static struct {
@@ -155,6 +161,7 @@ static const struct command cmdlist[] = {
   "mic",     "",   1, 1, 0x59, "<0=internal|1=pulse-command>", "internal microphone or sequence of pulse commands",
   "gain",    "",   1, 1, 0x5a, "<0=disable|1..?=mic-gain>", "set microphone gain or enable/disable pulse",
   "pulse",   "",   0, 0, 0x5b, "", "send sound pulse for music effects (parameters seem ignored)",
+  "remote",  "",   2,20, 0x5c, "<1..7=mode> <1..x=effect> ...", "set up to 10 remote-control mode+effect pairs",
   "play",    "",   1, 1, 0x5d, "<0=pause|1=play>", "pause/play effects for dynamic/sound mode",
   "bulk",    "",   1,12, 0x5e, "<1..7=mode> <1..4=effect> <1..255=level> <1..10=speed> <1..99=length> <0=left|1=right> <0..255=var44> <0.255=var45> <0..255=r> <0..255=g> <0..255=b> <0..255=var34> <0..255=var35>", "bulk set parms",
   "static", "a1a1a255a1a1a0a0a0", 3, 3, 0x5e, "<0..255=r> <0..255=g> <0..255=b>", "atomic change to static",
@@ -204,6 +211,18 @@ const struct {
   &_pr.cust[4], &_sp.cust[4], 4, "cust4", "%d/%02x:%02x:%02x",
   &_pr.cust[5], &_sp.cust[5], 4, "cust5", "%d/%02x:%02x:%02x",
   &_pr.cust[6], &_sp.cust[6], 4, "cust6", "%d/%02x:%02x:%02x",
+  NULL, NULL, 0, NULL, "\n",
+  &_pr.rcnt, &_sp.rcnt, 1, "rcnt", "%d",
+  &_pr.rme[0],  &_sp.rme[0],  2, "rme0", "%d:%d",
+  &_pr.rme[2],  &_sp.rme[2],  2, "rme1", "%d:%d",
+  &_pr.rme[4],  &_sp.rme[4],  2, "rme2", "%d:%d",
+  &_pr.rme[6],  &_sp.rme[6],  2, "rme3", "%d:%d",
+  &_pr.rme[8],  &_sp.rme[8],  2, "rme4", "%d:%d",
+  &_pr.rme[10], &_sp.rme[10], 2, "rme5", "%d:%d",
+  &_pr.rme[12], &_sp.rme[12], 2, "rme6", "%d:%d",
+  &_pr.rme[14], &_sp.rme[14], 2, "rme7", "%d:%d",
+  &_pr.rme[16], &_sp.rme[16], 2, "rme8", "%d:%d",
+  &_pr.rme[18], &_sp.rme[18], 2, "rme9", "%d:%d",
   NULL, NULL, 0, NULL, NULL
 };
 
@@ -289,7 +308,11 @@ void receive(const uint8_t *rcvbuf, int rcvlen)
       _qs.off = 0;
     if (_qs.off+len <= sizeof(_sp))
       memcpy(&_sp.u0+_qs.off, rcvbuf+9, len);
-    if ((_qs.off += len) < 76)
+    // must receive at least 77 bytes (rcnt)
+    if ((_qs.off += len) < 77)
+      return;
+    // use rcnt to calc actual length
+    if (_qs.off < 77+_sp.rcnt*2)
       return;
     _qs.off = 0;
 
