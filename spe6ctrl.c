@@ -23,9 +23,11 @@
    only tested on one spe630e
    why does x2902 query gives two different responses?
    investigate 0x01: returns differing single by based on parm
+   investivate 0x60: what do var44/var45 control?
    investivate 0x61: what do var34/var35 control?
    investivate 0x62: must be more than mode change
-   how to translate video rgb to led rgb?
+   investigate translation from video rgb to led rgb
+   investigate how to set remote control zone number
 
    general use: len=controllers/meter, speed=5
    good remote mode+effect (modified by speed+len+dir):
@@ -116,8 +118,8 @@ static struct sp630e {
   uint8_t level;     // 0x1d: rgb color level
   uint8_t white;     // 0x1e: white-led intensity
   uint8_t rgb[3];    // 0x1f: static rgb color
-  uint8_t var34;     // 0x22: changed by 0x61/0x5e for unknown purpose
-  uint8_t var35;     // 0x23: changed by 0x61/0x5e for unknown purpose
+  uint8_t var34;     // 0x22: set by 0x61/0x5e for unknown purpose
+  uint8_t var35;     // 0x23: set by 0x61/0x5e for unknown purpose
   uint8_t speed;     // 0x24: effect speed (1..10)
   uint8_t len;       // 0x25: effect length (1..150)
   uint8_t dir;       // 0x26: effect direction (0/1)
@@ -125,8 +127,8 @@ static struct sp630e {
 
   uint8_t mic;       // 0x28: sound trigger (0=internal microphone, 1=pulse request)
   uint8_t rgb2[3];   // 0x29: rgb changed by 0x57 for unknown purpose
-  uint8_t var44;     // 0x2c: set by 0x5e
-  uint8_t var45;     // 0x2d: set by 0x5e
+  uint8_t var44;     // 0x2c: set by 0x60/0x5e for unknown urpose
+  uint8_t var45;     // 0x2d: set by 0x60/0x5e for unknown purpose
   uint8_t u46[2];    // 0x2e:
   struct {           // custom (mode 7) length+rgb data
     uint8_t len;     // pixel length (1..?)
@@ -171,10 +173,11 @@ static const struct command cmdlist[] = {
   "pulse",   "",   0, 0, 0x5b, "", "send sound pulse for music effects (parameters seem ignored)",
   "remote",  "",   2,20, 0x5c, "<1..7=mode> <1..x=effect> ...", "set up to 10 remote-control mode+effect pairs",
   "play",    "",   1, 1, 0x5d, "<0=pause|1=play>", "pause/play effects for dynamic/sound mode",
-  "bulk",    "",   1,12, 0x5e, "<1..7=mode> <1..4=effect> <1..255=level> <1..10=speed> <1..99=length> <0=left|1=right> <0..255=var44> <0.255=var45> <0..255=r> <0..255=g> <0..255=b> <0..255=var34> <0..255=var35>", "bulk set parms",
+  "bulk",    "",   1,13, 0x5e, "<1..7=mode> <1..4=effect> <1..255=level> <1..10=speed> <1..99=length> <0=left|1=right> <0..255=var44> <0.255=var45> <0..255=r> <0..255=g> <0..255=b> <0..255=var34> <0..255=var35>", "bulk set parms",
   "static", "a1a1a255a1a1a0a0a0", 3, 3, 0x5e, "<0..255=r> <0..255=g> <0..255=b>", "atomic change to static",
   "dynamic","a3", 5, 5, 0x5e, "<1..130=effect> <1..255=level> <1..10=speed> <1..99=length> <0=left|1=right>", "atomic change to dynamic",
   "music", "a5",  5, 5, 0x5e, "<1..130=effect> <1..255=level> <1..10=speed> <1..99=length> <0=left|1=right>", "atomic change to dynamic",
+  "var44",   "",   1, 2, 0x60, "<0..255=var44> <0..244=var45>", "changes var44/var45 but actual purpose unknown",
   "var34",   "",   1, 2, 0x61, "<0..255=var34> <0..255=var35>", "changes var34/var35 but actual purpose unknown",
   "mode2",   "",   1, 1, 0x62, "<0=pause|1..7=mode>", "change mode without changing effect (same as single-parm mode command?)",
   "custom","a1p0", 4,28, 0x63, "<1..20=len:r:g:b> [up to 6 additional]", "set custom pattern (mode 7 to animate)",
