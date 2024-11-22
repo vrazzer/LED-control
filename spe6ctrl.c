@@ -25,8 +25,16 @@
    investigate 0x01: returns differing single by based on parm
    investivate 0x61: what do var34/var35 control?
    investivate 0x62: must be more than mode change
-   shory query (0x02 0x00) disconnects 10-20% likely due to controller using static delays
-   long query (0x02 0x01) response corrupted after byte 47 likely due to bluetooth-le pdu limit
+   how to translate video rgb to led rgb?
+
+   general use: len=controllers/meter, speed=5
+   good remote mode+effect (modified by speed+len+dir):
+     3:1 (rainbow wave) 3:4 (rainbox chase) 3:112 (rainbow stack) 3:146 (rainbow fade)
+     3:119 (rbw snake) 3:121 (rgw snake) 
+     7:1 (static), 7:2 (chase fwd), 7:4 (chase out), 7:17 (fade thru)
+   custom palettes for holidays (work in progress):
+     4:193:49:28 4:235:186:56 4:162:107:53 4:98:48:4 4:189:184:80 (fall/thanksgiving for 20 chip/m)
+     7:0xff:0xd0:0x00 6:0xff:0x68:0x16 7:0x04:0xb1:0x00 (thanksgiving w/green for 20 chip/m)
 */
 
 #include <stdio.h>
@@ -169,7 +177,7 @@ static const struct command cmdlist[] = {
   "music", "a5",  5, 5, 0x5e, "<1..130=effect> <1..255=level> <1..10=speed> <1..99=length> <0=left|1=right>", "atomic change to dynamic",
   "var34",   "",   1, 2, 0x61, "<0..255=var34> <0..255=var35>", "changes var34/var35 but actual purpose unknown",
   "mode2",   "",   1, 1, 0x62, "<0=pause|1..7=mode>", "change mode without changing effect (same as single-parm mode command?)",
-  "custom","a1",   4,28, 0x63, "<1..20=len> <r> <g> <b> [up to 6 additional]", "set custom pattern (mode 7 to animate)",
+  "custom","a1p0", 4,28, 0x63, "<1..20=len:r:g:b> [up to 6 additional]", "set custom pattern (mode 7 to animate)",
   "type",  "a1",   1, 1, 0x6a, "<1=pwm-mono|2=spi-mono|3=pwm-cct|4=spi-cct|5=pwm-rgb|6=spi-rgb|7=pwm-rgbw|8=spi-rgbw|9=pwm1+spi>", "set led string type",
   "order",   "",   1, 1, 0x6b, "<0=brg|1=bgr|2=rbg|3=gbr|4=rgb|5=grb>", "set led order (works during animation)",
   "ref",     "",   3, 3, 0x6c, "<0..255=led1> <0..255=led2> <0..255=led3>", "show static color without order correction (likely for setup)",
@@ -270,14 +278,15 @@ void cmdline(char *line, int sock)
 
   uint8_t req[48] = { GATT_WRITE_REQ, 0x0e, 0x00, 0x53, cmd->code, 0x00, 0x01, 0x00, 0 };
   uint8_t *add = req+8;
+  char *adj = (char *)cmd->adj;
   // allow add-in byte(s)
-  for (char *next = (char *)cmd->adj; *next++ == 'a';)
-    add[++(*add)] = strtol(next, &next, 0);
+  while (*adj == 'a')
+    add[++(*add)] = strtol(++adj, &adj, 0);
   for (int i = 1; i < ac; ++i)
     add[++(*add)] = strtol(av[i], NULL, 0);
   // allow padding
-  while ((cmd->adj[0] == 'p') && (*add < cmd->max))
-    add[++(*add)] = atoi(cmd->adj+1);
+  while ((*adj == 'p') && (*add < cmd->max))
+    add[++(*add)] = strtol(adj+1, NULL, 0);
 
   // check existing level prior to inc/dec
   if ((strcmp(av[0], "inc") == 0) && (_sp.fw[0] != 0) && (_sp.level > add[2]))
