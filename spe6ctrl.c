@@ -99,10 +99,9 @@ static struct sp630e {
   uint8_t u1[4];     // 0x01: 0x01
   uint8_t fw[8];     // 0x05: firmware version (V3.0.08 on my unit)
   uint8_t u13[1];    // 0x0d: 0x80=factory 0x86=tester
-  uint8_t u14[1];    // 0x0e: 0x01=factory 0x03=tester
-  uint8_t u15[1];    // 0x0f: 0x03
-  uint8_t u16[1];    // 0x10: 0x00
-  uint8_t u17[1];    // 0x11: 0x3c=factory 0x14=tester
+  uint8_t oo_effect; // 0x0e: onoff effect (1=fwd, 2=back, 3=fade, 4=stars)
+  uint8_t oo_speed;  // 0x0f: onoff speed (1..3)
+  uint8_t oo_len[2]; // 0x10: onoff len high:low (1..600)
   uint8_t coexist;   // 0x12: allow rgb+white (why?)
   uint8_t reboot;    // 0x13: power state on reboot (0=off, 1=on, 2=resume)
 
@@ -111,7 +110,7 @@ static struct sp630e {
   uint8_t u22[1];    // 0x16: 0x00
   uint8_t power;     // 0x17: current power (0=off, 1=on)
   uint8_t loop;      // 0x18: loop through effects (0=off, 1=on)
-  uint8_t u25[1];    // 0x19: 0x00=factory 0x04=tester
+  uint8_t order;     // 0x19: led order (0=brg,1=bgr,2=rbg,3=gbr,4=rgb,5=grb)
   uint8_t mode;      // 0x1a: display mode (1/2=static, 3/4=dynamic, 5/6=sound, 7=custom)
   uint8_t effect;    // 0x1b: effect within mode (over 130 effects for mode 3)
   uint8_t u28[1];    // 0x1c:
@@ -198,6 +197,10 @@ const struct {
   NULL, NULL, 0, NULL, "\n",
   &_pr.power, &_sp.power, 1, "power", "%d",
   &_pr.reboot, &_sp.reboot, 1, "reboot", "%d",
+  &_pr.order, &_sp.order, 1, "order", "%d",
+  &_pr.oo_effect, &_sp.oo_effect, 1, "oo_effect", "%d",
+  &_pr.oo_speed, &_sp.oo_speed, 1, "oo_speed", "%d",
+  &_pr.oo_len, &_sp.oo_len, 2, "oo_len", "%02x%02x",
   &_pr.mode, &_sp.mode, 1, "mode", "%d",
   &_pr.effect, &_sp.effect, 1, "effect", "%d",
   &_pr.speed, &_sp.speed, 1, "speed", "%d",
@@ -377,6 +380,21 @@ void receive(const uint8_t *rcvbuf, int rcvlen)
     if (len > 0)
       printf("%s\n", out);
     memcpy(&_pr, &_sp, sizeof(_pr));
+
+    // show config commands with parameters (for copy/paste to other controllers)
+    printf("---\n");
+    printf("order %d\n", _sp.order);
+    printf("onoff %d %d %d:%d\n", _sp.oo_effect, _sp.oo_speed, _sp.oo_len[0], _sp.oo_len[1]);
+    printf("bulk %d:%d %d %d %d %d %d:%d %d:%d:%d %d:%d\n", _sp.mode, _sp.effect, _sp.level, _sp.speed,
+        _sp.len, _sp.dir, _sp.var44, _sp.var45, _sp.rgb2[0], _sp.rgb2[1], _sp.rgb2[2], _sp.var34, _sp.var35);
+    printf("custom");
+    for (int i = 0; (i < sizeof(_sp.cust)/sizeof(_sp.cust[0])) && (_sp.cust[i].len > 0); ++i)
+      printf(" %d:%d:%d:%d", _sp.cust[i].len, _sp.cust[i].rgb[0], _sp.cust[i].rgb[1], _sp.cust[i].rgb[2]);
+    printf("\n");
+    printf("remote");
+    for (int i = 0; i < _sp.rcnt; ++i)
+      printf(" %d:%d", _sp.rme[i*2+0], _sp.rme[i*2+1]);
+    printf("\n");
   }
 }
 
