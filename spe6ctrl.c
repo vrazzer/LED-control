@@ -20,15 +20,7 @@
 
 /* notes:
    compile via: gcc -g -O0 spe6ctrl.c -o spe6ctrl -lbluetooth
-   only tested on one spe630e
-   why does x2902 query gives two different responses?
-   investigate 0x01: returns differing single by based on parm
-   investivate 0x60: what do var44/var45 control?
-   investivate 0x61: what do var34/var35 control?
-   investivate 0x62: must be more than mode change
-   investigate translation from video rgb to led rgb
-   investigate how to set remote control zone number
-
+   tested on spe630e w/V3.0.08 firmware
    general use: len=controllers/meter, speed=5
    good remote mode+effect (modified by speed+len+dir):
      3:1 (rainbow wave) 3:4 (rainbox chase) 3:112 (rainbow stack) 3:146 (rainbow fade)
@@ -37,6 +29,16 @@
    custom palettes for holidays (work in progress):
      4:193:49:28 4:235:186:56 4:162:107:53 4:98:48:4 4:189:184:80 (fall/thanksgiving for 20 chip/m)
      7:0xff:0xd0:0x00 6:0xff:0x68:0x16 7:0x04:0xb1:0x00 (thanksgiving w/green for 20 chip/m)
+*/
+/* investigate:
+   x2092: query returns two different responses
+   0x01: returns differing single by based on parm
+   0x60: what do var44/var45 control?
+   0x61: what do var34/var35 control?
+   0x62: must be more than mode change
+   translation from video rgb to led rgb 
+   how to set remote control zone number
+   determine pulse parameters
 */
 
 #include <stdio.h>
@@ -125,7 +127,7 @@ static struct sp630e {
   uint8_t gain;      // 0x27: microphone gain (0=disable, 1..255=gain)
 
   uint8_t mic;       // 0x28: sound trigger (0=internal microphone, 1=pulse request)
-  uint8_t rgb2[3];   // 0x29: rgb changed by 0x57 for unknown purpose
+  uint8_t m_rgb[3];  // 0x29: rgb color for music mode even# effects
   uint8_t var44;     // 0x2c: set by 0x60/0x5e for unknown urpose
   uint8_t var45;     // 0x2d: set by 0x60/0x5e for unknown purpose
   uint8_t u46[2];    // 0x2e:
@@ -165,11 +167,11 @@ static const struct command cmdlist[] = {
   "speed",   "",   1, 1, 0x54, "<1..10=speed>", "set effect speed (all modes)",
   "len",     "",   1, 1, 0x55, "<1..150=len>", "set dynamic-mode effect length",
   "dir",     "",   1, 1, 0x56, "<0=left|1=right>", "change dynamic-mode effect direction",
-  "rgb2",    "",   3, 3, 0x57, "<0..255=r> <0..255=g> <0..255=b>", "change rgb value 0x29 for unknown purpose",
+  "m_rgb",   "",   3, 3, 0x57, "<0..255=r> <0..255=g> <0..255=b>", "change music mode rgb value",
   "loop",    "",   1, 1, 0x58, "<0=off|1=on>", "loop through mode effects",
   "mic",     "",   1, 1, 0x59, "<0=internal|1=pulse-command>", "internal microphone or sequence of pulse commands",
   "gain",    "",   1, 1, 0x5a, "<0=disable|1..?=mic-gain>", "set microphone gain or enable/disable pulse",
-  "pulse",   "",   0, 0, 0x5b, "", "send sound pulse for music effects (parameters seem ignored)",
+  "pulse",   "",   0,20, 0x5b, "<parm1> ...", "pulse the music effect (parms control attack, intensity and fade in some way)",
   "remote",  "",   2,20, 0x5c, "<1..7=mode> <1..x=effect> ...", "set up to 10 remote-control mode+effect pairs",
   "play",    "",   1, 1, 0x5d, "<0=pause|1=play>", "pause/play effects for dynamic/sound mode",
   "bulk",    "",   1,13, 0x5e, "<1..7=mode> <1..4=effect> <1..255=level> <1..10=speed> <1..99=length> <0=left|1=right> <0..255=var44> <0.255=var45> <0..255=r> <0..255=g> <0..255=b> <0..255=var34> <0..255=var35>", "bulk set parms",
@@ -214,7 +216,7 @@ const struct {
   &_pr.white, &_sp.white, 1, "white", "%d",
   &_pr.gain, &_sp.gain, 1, "gain", "%d",
   &_pr.mic, &_sp.mic, 1, "mic", "%d",
-  &_pr.rgb2, &_sp.rgb2, 3, "rgb2", "%02x:%02x:%02x",
+  &_pr.m_rgb, &_sp.m_rgb, 3, "m_rgb", "%02x:%02x:%02x",
   &_pr.var44, &_sp.var44, 1, "var44", "%d",
   &_pr.var45, &_sp.var45, 1, "var45", "%d",
   NULL, NULL, 0, NULL, "\n",
@@ -386,7 +388,7 @@ void receive(const uint8_t *rcvbuf, int rcvlen)
     printf("order %d\n", _sp.order);
     printf("onoff %d %d %d:%d\n", _sp.oo_effect, _sp.oo_speed, _sp.oo_len[0], _sp.oo_len[1]);
     printf("bulk %d:%d %d %d %d %d %d:%d %d:%d:%d %d:%d\n", _sp.mode, _sp.effect, _sp.level, _sp.speed,
-        _sp.len, _sp.dir, _sp.var44, _sp.var45, _sp.rgb2[0], _sp.rgb2[1], _sp.rgb2[2], _sp.var34, _sp.var35);
+        _sp.len, _sp.dir, _sp.var44, _sp.var45, _sp.m_rgb[0], _sp.m_rgb[1], _sp.m_rgb[2], _sp.var34, _sp.var35);
     printf("custom");
     for (int i = 0; (i < sizeof(_sp.cust)/sizeof(_sp.cust[0])) && (_sp.cust[i].len > 0); ++i)
       printf(" %d:%d:%d:%d", _sp.cust[i].len, _sp.cust[i].rgb[0], _sp.cust[i].rgb[1], _sp.cust[i].rgb[2]);
